@@ -2,6 +2,7 @@ import hashlib
 from time import time
 import json
 from uuid import uuid4
+from urllib.parse import urlparse
 from textwrap import dedent
 from flask import Flask, jsonify, request
 
@@ -12,7 +13,7 @@ class Blockchain(object):
 
         # Create Genesis Block
         self.new_block(previous_hash=1, proof=100)
-
+        self.nodes = set()
     def new_block(self, proof, previous_hash=None):
         
         block = {
@@ -45,6 +46,74 @@ class Blockchain(object):
 
       
         return self.last_block['index'] + 1
+    def register_node(self, address):
+        """
+        Add a new node to the list of nodes 
+        :param address: <str> Address of node. Eg. 'http://192.168.0.5:5000'
+        :return: None
+        """
+        parse_url = urlparse(address)
+        self.nodes.add(parse_url.netlocs)
+        return None
+    def valid_chain(self, chain):
+        """
+        Determine if a given blockchain is valid
+        :param chain: <list> A blockchain
+        :return: <bool> True if valid, False if not
+        """
+
+        lastblock = chain[0]
+        current_index = 1
+
+        while current_index < len(chain):
+            block = chain[current_index]
+            print(f"{lastblock}")
+            print(f"{block}")
+            print(f"\n--------\n")
+            
+            #Check that the hash of the block is correct
+            if block['previous_hash'] != self.hash(lastblock):
+                return False
+            
+            # Check that the proof of work is correct
+            if not self.validate_proof(lastblock['proof'], block['proof']):
+                return False
+            
+            lastblock = block
+            current_index += 1
+
+        return True
+    
+    def resolve_conflicts(self):
+        """
+        This is our Consensus Algorithm, it resolves conflicts
+        by replacing our chain with the longest one in the network.
+        :return: <bool> True if our chain was replaced, False if not
+        """
+
+        neighbours = self.nodes
+        max_chain = None
+
+        # We are looking for chains longer than ours
+        max_length = len(self.chain)
+
+        #Grab and verify the chains from all nodes
+        for node in neighbours:
+            response = request.get(f"http:/{node}/chain")
+
+            if response.status_code == 200:
+                length = response.json()['length']
+                chain = response.json()['chain']
+
+                # Check if length is longer and chain is valid
+                if length > max_length and self.valid_chain(chain):
+                    max_length = length
+                    new_chain = chain
+            # Replace our chain if we found a new chain valid and longer than ours
+            if new_chain:
+                self.chain = new_chain
+                return True
+            return False
 
     @staticmethod
     def hash(block):
@@ -66,7 +135,7 @@ class Blockchain(object):
 
     def proof_of_work(self, last_proof):
         proof = 0
-        while self.valid_proof(last_proof, proof):
+        while self.validate_proof(last_proof, proof):
             proof += 1
         return proof
     @staticmethod
@@ -134,7 +203,37 @@ def full_chain():
         'length' : len(blockchain),
     }
     return jsonify(response), 200
+@app.route('/register/node')
+def register_nodes():
+    values = request.get_json()
 
+    nodes = values.get('nodes')
+    if node is None:
+        return "Error: please return a valid list of node", 400
+    for node in nodes:
+        blockchain.register_node()
+
+    response = {
+        'message' : 'New nodes have been added',
+        'total_nodes' : list(blockchain.nodes),
+    }
+    return jsonify(response), 201
+
+@app.route('/nodes/resolve', methods=['GET'])
+def consensus():
+    replaced = blockchain.resolve_conflicts()
+
+    if replaced:
+        response = {
+            'message': 'Our chain was replaced',
+            'new_chain': blockchain.chain
+        }
+    else:
+        response = {
+            'message': 'Our chain is authoritative',
+            'chain': blockchain.chain
+        }
+    return jsonify(response), 200
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
 
